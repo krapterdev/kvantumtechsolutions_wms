@@ -103,5 +103,5 @@ func NewRouter(queries *db.Queries) http.Handler {
 		),
 	)
 
-	return mux
+	return withCORS(mux)
 }
