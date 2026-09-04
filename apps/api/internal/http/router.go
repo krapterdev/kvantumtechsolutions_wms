@@ -6,6 +6,7 @@ import (
 
 	"github.com/krapterdev/kvantumtechsolutions_wms/apps/api/internal/auth"
 	db "github.com/krapterdev/kvantumtechsolutions_wms/apps/api/internal/database/generated"
+	"github.com/krapterdev/kvantumtechsolutions_wms/apps/api/internal/rbac"
 )
 
 func NewRouter(queries *db.Queries) http.Handler {
@@ -14,6 +15,7 @@ func NewRouter(queries *db.Queries) http.Handler {
 	authService := auth.NewService(queries)
 	sessionManager := auth.NewSessionManager(queries)
 	authHandler := auth.NewHandler(authService, sessionManager)
+	rbacService := rbac.NewService(queries)
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -27,45 +29,79 @@ func NewRouter(queries *db.Queries) http.Handler {
 		w.Write([]byte(`{"status":"ok","version":"v1"}`))
 	})
 
+	// Authentication
 	mux.HandleFunc("POST /api/v1/auth/login", authHandler.Login)
-	mux.HandleFunc("POST /api/v1/auth/users", authHandler.CreateUser)
+
+	mux.Handle(
+		"POST /api/v1/auth/users",
+		authHandler.AuthMiddleware(
+			rbac.RequirePermission(
+				rbacService,
+				"users.create",
+				http.HandlerFunc(authHandler.CreateUser),
+			),
+		),
+	)
+
 	mux.HandleFunc("POST /api/v1/auth/logout", authHandler.Logout)
 
-	mux.Handle("GET /api/v1/auth/me", authHandler.AuthMiddleware(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			user, ok := auth.UserFromContext(r.Context())
-			if !ok {
-				http.Error(w, "authentication required", http.StatusUnauthorized)
-				return
-			}
+	// Current authenticated user
+	mux.Handle(
+		"GET /api/v1/auth/me",
+		authHandler.AuthMiddleware(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				user, ok := auth.UserFromContext(r.Context())
+				if !ok {
+					http.Error(w, "authentication required", http.StatusUnauthorized)
+					return
+				}
 
-			response := struct {
-				User struct {
-					ID             string `json:"id"`
-					OrganizationID string `json:"organization_id"`
-					Email          string `json:"email"`
-					FirstName      string `json:"first_name"`
-					LastName       string `json:"last_name,omitempty"`
-					IsActive       bool   `json:"is_active"`
-				} `json:"user"`
-			}{}
+				response := struct {
+					User struct {
+						ID             string `json:"id"`
+						OrganizationID string `json:"organization_id"`
+						Email          string `json:"email"`
+						FirstName      string `json:"first_name"`
+						LastName       string `json:"last_name,omitempty"`
+						IsActive       bool   `json:"is_active"`
+					} `json:"user"`
+				}{}
 
-			response.User.ID = user.ID.String()
-			response.User.OrganizationID = user.OrganizationID.String()
-			response.User.Email = user.Email
-			response.User.FirstName = user.FirstName
-			response.User.IsActive = user.IsActive
+				response.User.ID = user.ID.String()
+				response.User.OrganizationID = user.OrganizationID.String()
+				response.User.Email = user.Email
+				response.User.FirstName = user.FirstName
+				response.User.IsActive = user.IsActive
 
-			if user.LastName.Valid {
-				response.User.LastName = user.LastName.String
-			}
+				if user.LastName.Valid {
+					response.User.LastName = user.LastName.String
+				}
 
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
 
-			_ = json.NewEncoder(w).Encode(response)
-		}),
-	))
+				_ = json.NewEncoder(w).Encode(response)
+			}),
+		),
+	)
+
+	// Temporary RBAC permission test endpoint
+	mux.Handle(
+		"GET /api/v1/test/users",
+		authHandler.AuthMiddleware(
+			rbac.RequirePermission(
+				rbacService,
+				"users.read",
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"status": "users.read permission granted",
+					})
+				}),
+			),
+		),
+	)
 
 	return mux
 }
